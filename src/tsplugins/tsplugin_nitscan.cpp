@@ -79,6 +79,7 @@ namespace ts {
         bool          _save_channel_file;     // Save a fresh new version of channel configuration file.
         bool          _update_channel_file;   // Update previous content of channel configuration file.
         bool          _default_channel_file;  // Use default channel configuration file.
+        bool          _nagra_iptv;      // NAGRAVISION IPTV
 
         // Invoked by the demux when a complete table is available.
         virtual void handleTable(SectionDemux&, const BinaryTable&) override;
@@ -118,7 +119,8 @@ ts::NITScanPlugin::NITScanPlugin(TSP* tsp_) :
     _channel_file(),
     _save_channel_file(false),
     _update_channel_file(false),
-    _default_channel_file(false)
+    _default_channel_file(false),
+    _nagra_iptv(false)
 {
     option(u"all-nits", 'a');
     help(u"all-nits",
@@ -179,6 +181,10 @@ ts::NITScanPlugin::NITScanPlugin(TSP* tsp_) :
          u"definition. The name of each variable is built from a prefix and the TS "
          u"id. The default prefix is \"TS\" and can be changed through the optional "
          u"value of the option --variable. ");
+
+    option(u"nagra-iptv");
+    help(u"nagra-iptv",
+         u"NAGRAVISION IPTV Scan.");
 }
 
 
@@ -205,6 +211,8 @@ bool ts::NITScanPlugin::getOptions()
     _update_channel_file = present(u"update-channels");
     _channel_file = _update_channel_file ? value(u"update-channels") : value(u"save-channels");
     _default_channel_file = (_save_channel_file || _update_channel_file) && (_channel_file.empty() || _channel_file == u"-");
+
+    _nagra_iptv = present(u"nagra-iptv");
 
     if (_save_channel_file && _update_channel_file) {
         tsp->error(u"--save-channels and --update-channels are mutually exclusive");
@@ -400,6 +408,40 @@ void ts::NITScanPlugin::processNIT(const NIT& nit)
                     // Do not reset services in TS, keep existing if any, just update tuning info.
                     ts->onid = tsid.original_network_id;
                     ts->tune = tp;
+                }
+            }
+
+            if (_nagra_iptv) {
+                const Descriptor& desc = *dlist[i];
+                if (!desc.isValid()) {
+                    continue;
+                }
+                if (desc.tag() == 0x8A) {
+                    const uint8_t* content = desc.content();
+                    uint8_t desc_class = (content[2] & 0xC0) >> 6;
+                    uint8_t desc_syntax = (content[2] & 0x3F);
+                    if (desc_class != 0 || desc_syntax != 2) {
+                        continue;
+                    }
+                    if (_use_comment) {
+                        *_output << _comment_prefix
+                                 << UString::Format(u"TS id: %d (0x%X), original network id: %d (0x%X), from NIT v%d on network id: %d (0x%X)",
+                                                    {tsid.transport_stream_id, tsid.transport_stream_id,
+                                                     tsid.original_network_id, tsid.original_network_id,
+                                                     nit.version,
+                                                     nit.network_id, nit.network_id})
+                                 << std::endl;
+                    }
+                    // Output the tuning information, optionally in a variable definition.
+                    if (_use_variable) {
+                        *_output << _variable_prefix << int(tsid.transport_stream_id) << "=\"";
+                    }
+                    *_output << "--delivery-system IPTV "
+                             << "--url " << std::string(content + 6, content + 6 + content[5]);
+                    if (_use_variable) {
+                        *_output << "\"";
+                    }
+                    *_output << std::endl;
                 }
             }
         }
